@@ -51,5 +51,7 @@ docs/_build/
 
 # Ignore data and ckpts
 *.pth
-data
+/data/*/
 src/checkpoints
+/output
+/venv

@@ -5,7 +5,8 @@ workdir='.'
 model_name='ours'
 ckpt_name='cut3r_512_dpt_4_64'
 model_weights="${workdir}/src/${ckpt_name}.pth"
-datasets=('sintel' 'bonn' 'kitti' 'nyu')
+#datasets=('sintel' 'bonn' 'kitti' 'nyu')
+datasets=('kitti')
 
 for data in "${datasets[@]}"; do
     output_dir="${workdir}/eval_results/monodepth/${data}_${model_name}"
