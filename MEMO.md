@@ -3,6 +3,7 @@
 python -m venv venv
 pip install --upgrade pip setuptools wheel
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+pip install -r requirements.txt
 pip install git+https://github.com/nerfstudio-project/gsplat.git
 pip install evo
 pip install open3d
@@ -10,11 +11,11 @@ cd src/croco/models/curope/
 python setup.py build_ext --inplace
 cd ../../../../
 pip install gdown
-cd ..
-pip install -r requirements.txt
-pip install evo
 pip install torchinfo
 pip install torchvista
+cd src # ここから重みdownload
+gdown --fuzzy https://drive.google.com/file/d/1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD/view?usp=drive_link
+cd ..
 ```
 
 # 変更点メモ
@@ -24,3 +25,13 @@ kernels.cuの中を少し変更。buildに支障が出たため。
 - after  
 `AT_DISPATCH_FLOATING_TYPES_AND_HALF(tokens.scalar_type(), "rope_2d_cuda", ([&] {`
 
+# Zip解凍方法
+```bash
+python3 -c "import zipfile; zipfile.ZipFile('kitti/2011_09_26_drive_0002_sync.zip').extractall('data/kitti/')"
+```
+
+# macからサーバーへのデータ転送
+my.zipを自分のmacのhome dirに置いた上で、
+```bash
+scp my.zip サーバー名:~/slocal/
+```
