@@ -13,6 +13,8 @@ pip install gdown
 cd ..
 pip install -r requirements.txt
 pip install evo
+pip install torchinfo
+pip install torchvista
 ```
 
 # 変更点メモ

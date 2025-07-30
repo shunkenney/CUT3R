@@ -330,9 +330,10 @@ class PositionGetter(object):
         if not (h, w) in self.cache_positions:
             x = torch.arange(w, device=device)
             y = torch.arange(h, device=device)
-            self.cache_positions[h, w] = torch.cartesian_prod(y, x)  # (h, w, 2)
-        pos = self.cache_positions[h, w].view(1, h * w, 2).expand(b, -1, 2).clone()
-        return pos
+            self.cache_positions[h, w] = torch.cartesian_prod(y, x)  # (h*w, 2)
+            # self.cache_positions : # {(h, w): tensor([[0, 1], [0, 2],..., [h-1, w-1]])}
+        pos = self.cache_positions[h, w].view(1, h * w, 2).expand(b, -1, 2).clone()  # pos.shape : (b, h*w, 2)
+        return pos  # pos.shape : (b, h*w, 2)
 
 
 class PatchEmbed(nn.Module):

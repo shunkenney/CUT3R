@@ -107,7 +107,7 @@ def prepare_input(
         # Only images are provided.
         for i in range(len(images)):
             view = {
-                "img": images[i]["img"],
+                "img": images[i]["img"], # shape : (1, 3, H, W)
                 "ray_map": torch.full(
                     (
                         images[i]["img"].shape[0],
@@ -116,17 +116,17 @@ def prepare_input(
                         images[i]["img"].shape[-1],
                     ),
                     torch.nan,
-                ),
-                "true_shape": torch.from_numpy(images[i]["true_shape"]),
+                ),                       # shape : (1, 6, H, W)
+                "true_shape": torch.from_numpy(images[i]["true_shape"]),  # tensor([[H, W]])、shape : (2,)
                 "idx": i,
                 "instance": str(i),
                 "camera_pose": torch.from_numpy(np.eye(4, dtype=np.float32)).unsqueeze(
                     0
-                ),
-                "img_mask": torch.tensor(True).unsqueeze(0),
-                "ray_mask": torch.tensor(False).unsqueeze(0),
-                "update": torch.tensor(True).unsqueeze(0),
-                "reset": torch.tensor(False).unsqueeze(0),
+                ),                      # shape : (1, 4, 4)
+                "img_mask": torch.tensor(True).unsqueeze(0),  # tensor([True])
+                "ray_mask": torch.tensor(False).unsqueeze(0),  # tensor([False])
+                "update": torch.tensor(True).unsqueeze(0),  # tensor([True])
+                "reset": torch.tensor(False).unsqueeze(0),  # tensor([False])
             }
             views.append(view)
     else:
@@ -206,20 +206,40 @@ def prepare_output(outputs, outdir, revisit=1, use_pose=True):
     valid_length = len(outputs["pred"]) // revisit
     outputs["pred"] = outputs["pred"][-valid_length:]
     outputs["views"] = outputs["views"][-valid_length:]
+    # len(outputs["pred"]) : 入力の画像枚数。Nとする。
+    # outpus["pred"][0].key() : 'pts3d_in_self_view', 'conf_self', 'rgb', 'camera_pose', 'pts3d_in_other_view', 'conf'
+    # outpus["views"][0].key() : 'img', 'ray_map', 'true_shape', 'idx', 'instance', 'camera_pose', 'img_mask', 'ray_mask', 'update', 'reset'
+    
+    # outputs["pred"][0]["pts3d_in_self_view"].shape : [1, H, W, 3]
+    # outputs["pred"][0]["pts3d_in_other_view"].shape : [1, H, W, 3]
+    # outputs["pred"][0]["conf_self"].shape : [1, H, W]
+    # outputs["pred"][0]["conf"].shape : [1, H, W]
+    # outputs["pred"][0]["camera_pose"].shape : [1, 7]
+    # outputs["pred"][0]["rgb"].shape : [1, H, W, 3]
+    # outputs["views"][0]["img"].shape : [1, 3, H, W]
+    # outputs["views"][0]["ray_map"].shape : [1, 6, H, W]
+    # outputs["views"][0]["true_shape"].shape : [1, 2]
+    # outputs["views"][0]["idx"] type : int
+    # outputs["views"][0]["instance"] type : str
+    # outputs["views"][0]["camera_pose"].shape : [1, 4, 4]
+    # outputs["views"][0]["img_mask"].shape : [1]
+    # outputs["views"][0]["ray_mask"].shape : [1]
+    # outputs["views"][0]["update"].shape : [1]
+    # outputs["views"][0]["reset"].shape : [1]
 
-    pts3ds_self_ls = [output["pts3d_in_self_view"].cpu() for output in outputs["pred"]]
-    pts3ds_other = [output["pts3d_in_other_view"].cpu() for output in outputs["pred"]]
-    conf_self = [output["conf_self"].cpu() for output in outputs["pred"]]
-    conf_other = [output["conf"].cpu() for output in outputs["pred"]]
-    pts3ds_self = torch.cat(pts3ds_self_ls, 0)
+    pts3ds_self_ls = [output["pts3d_in_self_view"].cpu() for output in outputs["pred"]]  # pts3ds_self_ls[0].shape: [1, H, W, 3] 
+    pts3ds_other = [output["pts3d_in_other_view"].cpu() for output in outputs["pred"]]  # pts3ds_other[0].shape: [1, H, W, 3]
+    conf_self = [output["conf_self"].cpu() for output in outputs["pred"]]               # conf_self[0].shape: [1, H, W]
+    conf_other = [output["conf"].cpu() for output in outputs["pred"]]                   # conf_other[0].shape: [1, H, W]
+    pts3ds_self = torch.cat(pts3ds_self_ls, 0)                                         # pts3ds_self.shape: [N, H, W, 3]
 
     # Recover camera poses.
     pr_poses = [
         pose_encoding_to_camera(pred["camera_pose"].clone()).cpu()
         for pred in outputs["pred"]
-    ]
-    R_c2w = torch.cat([pr_pose[:, :3, :3] for pr_pose in pr_poses], 0)
-    t_c2w = torch.cat([pr_pose[:, :3, 3] for pr_pose in pr_poses], 0)
+    ]                                                                        # pr_poses[0].shape: [1, 4, 4]   
+    R_c2w = torch.cat([pr_pose[:, :3, :3] for pr_pose in pr_poses], 0)       # [N, 3, 3]
+    t_c2w = torch.cat([pr_pose[:, :3, 3] for pr_pose in pr_poses], 0)        # [N, 3]
 
     if use_pose:
         transformed_pts3ds_other = []
@@ -230,22 +250,22 @@ def prepare_output(outputs, outdir, revisit=1, use_pose=True):
 
     # Estimate focal length based on depth.
     B, H, W, _ = pts3ds_self.shape
-    pp = torch.tensor([W // 2, H // 2], device=pts3ds_self.device).float().repeat(B, 1)
-    focal = estimate_focal_knowing_depth(pts3ds_self, pp, focal_mode="weiszfeld")
+    pp = torch.tensor([W // 2, H // 2], device=pts3ds_self.device).float().repeat(B, 1)   # [N, 2]
+    focal = estimate_focal_knowing_depth(pts3ds_self, pp, focal_mode="weiszfeld")          # [N]
 
     colors = [
         0.5 * (output["img"].permute(0, 2, 3, 1) + 1.0) for output in outputs["views"]
-    ]
+    ]                                                                         # [1, H, W, 3]
 
     cam_dict = {
-        "focal": focal.cpu().numpy(),
-        "pp": pp.cpu().numpy(),
-        "R": R_c2w.cpu().numpy(),
-        "t": t_c2w.cpu().numpy(),
+        "focal": focal.cpu().numpy(),  # [N]
+        "pp": pp.cpu().numpy(),        # [N, 2]
+        "R": R_c2w.cpu().numpy(),      # [N, 3, 3]
+        "t": t_c2w.cpu().numpy(),      # [N, 3]
     }
 
     pts3ds_self_tosave = pts3ds_self  # B, H, W, 3
-    depths_tosave = pts3ds_self_tosave[..., 2]
+    depths_tosave = pts3ds_self_tosave[..., 2]  # [B, H, W]
     pts3ds_other_tosave = torch.cat(pts3ds_other)  # B, H, W, 3
     conf_self_tosave = torch.cat(conf_self)  # B, H, W
     conf_other_tosave = torch.cat(conf_other)  # B, H, W
@@ -372,6 +392,10 @@ def run_inference(args):
     print("Running inference...")
     start_time = time.time()
     outputs, state_args = inference(views, model, device)
+    # len(state_args) : list : N + 1
+    # len(state_args[0]) : tuple : 1
+    # state_args[0][0].shape : [1, 768, 768]
+
     total_time = time.time() - start_time
     per_frame_time = total_time / len(views)
     print(

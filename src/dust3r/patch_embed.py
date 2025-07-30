@@ -17,7 +17,7 @@ def get_patch_embed(patch_embed_cls, img_size, patch_size, enc_embed_dim, in_cha
 
 class PatchEmbedDust3R(PatchEmbed):
     def forward(self, x, **kw):
-        B, C, H, W = x.shape
+        B, C, H, W = x.shape  # x.shape: (B, C, 256, 512)
         assert (
             H % self.patch_size[0] == 0
         ), f"Input image height ({H}) is not a multiple of patch size ({self.patch_size[0]})."
@@ -29,7 +29,7 @@ class PatchEmbedDust3R(PatchEmbed):
         if self.flatten:
             x = x.flatten(2).transpose(1, 2)  # BCHW -> BNC
         x = self.norm(x)
-        return x, pos
+        return x, pos  # x.shape: (B, N, 1024) inference(B, 512, 1024), pos.shape: (B, N, 2) inference(B, 512, 2)
 
 
 class ManyAR_PatchEmbed(PatchEmbed):

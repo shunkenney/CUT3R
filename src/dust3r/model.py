@@ -513,8 +513,8 @@ class ARCroco3DStereo(CroCoNet):
             self.downstream_head, activate=landscape_only
         )
 
-    def _encode_image(self, image, true_shape):
-        x, pos = self.patch_embed(image, true_shape=true_shape)
+    def _encode_image(self, image, true_shape):  # image Encoder
+        x, pos = self.patch_embed(image, true_shape=true_shape)  # x.shape: (B, N, 1024), pos.shape: (B, N, 2)
         assert self.enc_pos_embed is None
         for blk in self.enc_blocks:
             if self.gradient_checkpointing and self.training:
@@ -525,7 +525,8 @@ class ARCroco3DStereo(CroCoNet):
         return [x], pos, None
 
     def _encode_ray_map(self, ray_map, true_shape):
-        x, pos = self.patch_embed_ray_map(ray_map, true_shape=true_shape)
+        x, pos = self.patch_embed_ray_map(ray_map, true_shape=true_shape)  # true_shape : [[256, 512]]、shape : [1, 2]
+        # x.shape: (1, N, 1024), pos.shape: (1, N, 2)
         assert self.enc_pos_embed is None
         for blk in self.enc_blocks_ray_map:
             if self.gradient_checkpointing and self.training:
@@ -585,7 +586,7 @@ class ARCroco3DStereo(CroCoNet):
         )  # Shape: (num_views, batch_size, C, H, W)
         ray_maps = torch.stack(
             [view["ray_map"] for view in views], dim=0
-        )  # Shape: (num_views, batch_size, H, W, C)
+        )  # Shape: (num_views, batch_size, 6, H, W)
         shapes = []
         for view in views:
             if "true_shape" in view:
@@ -601,14 +602,14 @@ class ARCroco3DStereo(CroCoNet):
         )  # Shape: (num_views * batch_size, C, H, W)
         ray_maps = ray_maps.view(
             -1, *ray_maps.shape[2:]
-        )  # Shape: (num_views * batch_size, H, W, C)
+        )  # Shape: (num_views * batch_size, 6, H, W)
         shapes = shapes.view(-1, 2)  # Shape: (num_views * batch_size, 2)
         img_masks_flat = img_mask.view(-1)  # Shape: (num_views * batch_size)
-        ray_masks_flat = ray_mask.view(-1)
+        ray_masks_flat = ray_mask.view(-1)  # Shape: (num_views * batch_size)
         selected_imgs = imgs[img_masks_flat]
         selected_shapes = shapes[img_masks_flat]
         if selected_imgs.size(0) > 0:
-            img_out, img_pos, _ = self._encode_image(selected_imgs, selected_shapes)
+            img_out, img_pos, _ = self._encode_image(selected_imgs, selected_shapes)  # image Encoder, # img_out.shape: [(num_views * batch_size, N, 1024)], img_pos.shape: (num_views * batch_size, N, 2) 
         else:
             raise NotImplementedError
         full_out = [
@@ -616,21 +617,21 @@ class ARCroco3DStereo(CroCoNet):
                 len(views) * batch_size, *img_out[0].shape[1:], device=img_out[0].device
             )
             for _ in range(len(img_out))
-        ]
+        ]                                  # shape : [[num_views * batch_size, N, 1024]]
         full_pos = torch.zeros(
             len(views) * batch_size,
             *img_pos.shape[1:],
             device=img_pos.device,
             dtype=img_pos.dtype,
-        )
+        )                                  # shape : [num_views * batch_size, N, 2]
         for i in range(len(img_out)):
             full_out[i][img_masks_flat] += img_out[i]
             full_out[i][~img_masks_flat] += self.masked_img_token
         full_pos[img_masks_flat] += img_pos
-        ray_maps = ray_maps.permute(0, 3, 1, 2)  # Change shape to (N, C, H, W)
-        selected_ray_maps = ray_maps[ray_masks_flat]
-        selected_shapes_ray = shapes[ray_masks_flat]
-        if selected_ray_maps.size(0) > 0:
+        ray_maps = ray_maps.permute(0, 3, 1, 2)  # shape : (num_views * batch_size, W, 6, H).   ←間違っているようにしか見えない
+        selected_ray_maps = ray_maps[ray_masks_flat]  # shape : (0, W, 6, H)
+        selected_shapes_ray = shapes[ray_masks_flat]  
+        if selected_ray_maps.size(0) > 0:                         # Falseなのでskip。上記のimplementationミスはここで奇跡的に打ち消されている。
             ray_out, ray_pos, _ = self._encode_ray_map(
                 selected_ray_maps, selected_shapes_ray
             )
@@ -644,19 +645,19 @@ class ARCroco3DStereo(CroCoNet):
         else:
             raymaps = torch.zeros(
                 1, 6, imgs[0].shape[-2], imgs[0].shape[-1], device=img_out[0].device
-            )
-            ray_mask_flat = torch.zeros_like(img_masks_flat)
-            ray_mask_flat[:1] = True
-            ray_out, ray_pos, _ = self._encode_ray_map(raymaps, shapes[ray_mask_flat])
-            for i in range(len(ray_out)):
+            )  # shape : (1, 6, H, W)
+            ray_mask_flat = torch.zeros_like(img_masks_flat)  # shape : (num_views * batch_size)
+            ray_mask_flat[:1] = True                          # [True, False, False, ...]  # only the first view is True
+            ray_out, ray_pos, _ = self._encode_ray_map(raymaps, shapes[ray_mask_flat])  # ray Encoder, # ray_out.shape: [(1, N, 1024)], ray_pos.shape: (1, N, 2)
+            for i in range(len(ray_out)):                     # 意味不明。何これ。
                 full_out[i][ray_mask_flat] += ray_out[i] * 0.0
                 full_out[i][~ray_mask_flat] += self.masked_ray_map_token * 0.0
         return (
             shapes.chunk(len(views), dim=0),
             [out.chunk(len(views), dim=0) for out in full_out],
             full_pos.chunk(len(views), dim=0),
-        )
-
+        )  # それぞれをtensorのshape: [num_views * batch_size, ...]だったものを、shape: (...) * <num_views * batch_size>個のtupleに分割する。
+    
     def _decoder(self, f_state, pos_state, f_img, pos_img, f_pose, pos_pose):
         final_output = [(f_state, f_img)]  # before projection
         assert f_state.shape[-1] == self.dec_embed_dim
@@ -1121,3 +1122,6 @@ if __name__ == "__main__":
         dec_num_heads=12,
     )
     ARCroco3DStereo(cfg)
+    
+
+
