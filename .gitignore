@@ -57,3 +57,4 @@ src/checkpoints
 /venv
 /demo_tmp
 /tmp*
+/torchvista

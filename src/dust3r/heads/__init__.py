@@ -29,7 +29,7 @@ def head_factory(
     elif head_type == "dpt" and output_mode == "pts3d":
         raise NotImplementedError(f"unexpected {head_type=} and {output_mode=}")
         return create_dpt_head(net, has_conf=has_conf)
-    elif head_type == "dpt" and output_mode == "pts3d+pose":
+    elif head_type == "dpt" and output_mode == "pts3d+pose":  # inferenceの時はこれ
         return DPTPts3dPose(net, has_conf, has_rgb, has_pose)
     else:
         raise NotImplementedError(f"unexpected {head_type=} and {output_mode=}")

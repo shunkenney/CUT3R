@@ -12,10 +12,16 @@ python setup.py build_ext --inplace
 cd ../../../../
 pip install gdown
 pip install torchinfo
-pip install torchvista
 cd src # ここから重みdownload
 gdown --fuzzy https://drive.google.com/file/d/1Asz-ZB3FfpzZYwunhQvNPZEUA8XUNAYD/view?usp=drive_link
 cd ..
+git clone git@github.com:shunkenney/torchvista.git
+cd torchvista
+pip install -e
+cd ..
+pip install graphviz
+pip install torchview
+
 ```
 
 # 変更点メモ
@@ -35,3 +41,7 @@ my.zipを自分のmacのhome dirに置いた上で、
 ```bash
 scp my.zip サーバー名:~/slocal/
 ```
+
+# 学んだこと
+`*(a, b)[::+1]  ->  a, b`
+`*(a, b)[::-1]  ->  b, a`

@@ -17,7 +17,8 @@ class cuRoPE2D_func(torch.autograd.Function):
         ctx.saved_base = base
         ctx.saved_F0 = F0
         # tokens = tokens.clone() # uncomment this if inplace doesn't work
-        _kernels.rope_2d(tokens, positions, base, F0)
+        _kernels.rope_2d(tokens.float(), positions, base, F0)  # torchvistaの時はこっちをuncommentして、1行下をcomment outする。
+        #_kernels.rope_2d(tokens, positions, base, F0)
         ctx.mark_dirty(tokens)
         return tokens
 

@@ -54,19 +54,27 @@ class DPTOutputAdapter_fix(DPTOutputAdapter):
 
         layers = [
             rearrange(l, "b (nh nw) c -> b c nh nw", nh=N_H, nw=N_W) for l in layers
-        ]
+        ]     #[[B, 1024, N_H, N_W], [B, 768, N_H, N_W],[B, 768, N_H, N_W],[B, 768, N_H, N_W]]
 
         layers = [self.act_postprocess[idx](l) for idx, l in enumerate(layers)]
+        # layers[0].shape : [B, 96, 72, 128]。4倍upsamapling。conv + Tconv
+        # layers[1].shape : [B, 192, 36, 64]。2倍upsamapling。conv + Tconv
+        # layers[2].shape : [B, 384, 18, 32]。conv
+        # layers[3].shape : [B, 768, 9, 16]。2倍downsamapling。conv + conv
 
         layers = [self.scratch.layer_rn[idx](l) for idx, l in enumerate(layers)]
+        # layers[0].shape : [B, 256, 72, 128]
+        # layers[1].shape : [B, 256, 36, 64]
+        # layers[2].shape : [B, 256, 18, 32]
+        # layers[3].shape : [B, 256, 9, 16]
 
         path_4 = self.scratch.refinenet4(layers[3])[
             :, :, : layers[2].shape[2], : layers[2].shape[3]
-        ]
-        path_3 = self.scratch.refinenet3(path_4, layers[2])
-        path_2 = self.scratch.refinenet2(path_3, layers[1])
-        path_1 = self.scratch.refinenet1(path_2, layers[0])
-
+        ]                                                    # [B, 256, 18, 32]
+        path_3 = self.scratch.refinenet3(path_4, layers[2])  # [B, 256, 36, 64]
+        path_2 = self.scratch.refinenet2(path_3, layers[1])  # [B, 256, 72, 128]
+        path_1 = self.scratch.refinenet1(path_2, layers[0])  # [B, 256, 144, 256]
+        
         out = self.head(path_1)
 
         return out
@@ -212,16 +220,17 @@ class DPTPts3dPose(nn.Module):
 
     def forward(self, x, img_info, **kwargs):
         if self.has_pose:
-            pose_token = x[-1][:, 0].clone()
-            token = x[-1][:, 1:]
+            pose_token = x[-1][:, 0].clone()  # 最終出力([-1])のから、pose_tokenだけ取得。 [B, 768]
+            token = x[-1][:, 1:]              # 最終出力([-1])のから、画像tokenを取得。 [B, N, 768]
             with torch.cuda.amp.autocast(enabled=False):
-                pose = self.pose_head(pose_token)
+                pose = self.pose_head(pose_token)  # [B, 7]
 
             token_cross = token.clone()
             for blk in self.final_transform:
-                token_cross = blk(token_cross, pose_token, kwargs.get("pos"))
-            x = x[:-1] + [token]
-            x_cross = x[:-1] + [token_cross]
+                token_cross = blk(token_cross, pose_token, kwargs.get("pos"))  # 画像tokenを、pose_tokenと混ぜ合わせながら更新。kwargs.get("pos").shape: [B, N, 2]
+
+            x = x[:-1] + [token]               # 最終出力の部分だけ、元の画像tokenに置き換える。[B, N, 768]が4つ入ったlist
+            x_cross = x[:-1] + [token_cross]   # 最終出力の部分だけ、pose_tokenと混ぜ合わせた画像tokenに置き換える。[B, N, 768]が4つ入ったlist
 
         with torch.cuda.amp.autocast(enabled=False):
             self_out = checkpoint(
@@ -232,8 +241,8 @@ class DPTPts3dPose(nn.Module):
             )
 
             final_output = postprocess(self_out, self.depth_mode, self.conf_mode)
-            final_output["pts3d_in_self_view"] = final_output.pop("pts3d")
-            final_output["conf_self"] = final_output.pop("conf")
+            final_output["pts3d_in_self_view"] = final_output.pop("pts3d")  # [B, 288, 512, 3]
+            final_output["conf_self"] = final_output.pop("conf")            # [B, 288, 512]
 
             if self.has_rgb:
                 rgb_out = checkpoint(
@@ -242,7 +251,7 @@ class DPTPts3dPose(nn.Module):
                     image_size=(img_info[0], img_info[1]),
                     use_reentrant=False,
                 )
-                rgb_output = postprocess_rgb(rgb_out)
+                rgb_output = postprocess_rgb(rgb_out)  # rgb_output: {"rgb": [B, 288, 512, 3]}
                 final_output.update(rgb_output)
 
             if self.has_pose:
@@ -255,6 +264,6 @@ class DPTPts3dPose(nn.Module):
                     use_reentrant=False,
                 )
                 tmp = postprocess(cross_out, self.depth_mode, self.conf_mode)
-                final_output["pts3d_in_other_view"] = tmp.pop("pts3d")
-                final_output["conf"] = tmp.pop("conf")
+                final_output["pts3d_in_other_view"] = tmp.pop("pts3d")  # [B, 288, 512, 3]
+                final_output["conf"] = tmp.pop("conf")                  # [B, 288, 512]
         return final_output

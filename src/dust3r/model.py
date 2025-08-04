@@ -201,7 +201,7 @@ class LocalMemory(nn.Module):
             ]
         )
 
-    def update_mem(self, mem, feat_k, feat_v):
+    def update_mem(self, mem, feat_k, feat_v):  # feat_k = global pooled image feature, feat_v = pose feature
         """
         mem_k: [B, size, C]
         mem_v: [B, size, C]
@@ -209,14 +209,14 @@ class LocalMemory(nn.Module):
         feat_v: [B, 1, C]
         """
         feat_k = self.proj_q(feat_k)  # [B, 1, C]
-        feat = torch.cat([feat_k, feat_v], dim=-1)
+        feat = torch.cat([feat_k, feat_v], dim=-1)   # decoder blockはkeyとvalueをconcatした状態で入力する必要があるらしい。
         for blk in self.write_blocks:
             mem, _ = blk(mem, feat, None, None)
         return mem
 
-    def inquire(self, query, mem):
-        x = self.proj_q(query)  # [B, 1, C]
-        x = torch.cat([x, self.masked_token.expand(x.shape[0], -1, -1)], dim=-1)
+    def inquire(self, query, mem):            # query = global pooled image feature
+        x = self.proj_q(query)  # [B, 1, 1024] -> [B, 1, 768]
+        x = torch.cat([x, self.masked_token.expand(x.shape[0], -1, -1)], dim=-1)   # decoder blockはkeyとvalueをconcatした状態で入力する必要があるらしい。
         for blk in self.read_blocks:
             x, _ = blk(x, mem, None, None)
         return x[..., -self.v_dim :]
@@ -514,14 +514,14 @@ class ARCroco3DStereo(CroCoNet):
         )
 
     def _encode_image(self, image, true_shape):  # image Encoder
-        x, pos = self.patch_embed(image, true_shape=true_shape)  # x.shape: (B, N, 1024), pos.shape: (B, N, 2)
+        x, pos = self.patch_embed(image, true_shape=true_shape)  # x.shape: (views * batch, N, 1024), pos.shape: (views * batch, N, 2)
         assert self.enc_pos_embed is None
         for blk in self.enc_blocks:
             if self.gradient_checkpointing and self.training:
                 x = checkpoint(blk, x, pos, use_reentrant=False)
             else:
                 x = blk(x, pos)
-        x = self.enc_norm(x)
+        x = self.enc_norm(x)  # layer_norm
         return [x], pos, None
 
     def _encode_ray_map(self, ray_map, true_shape):
@@ -536,11 +536,12 @@ class ARCroco3DStereo(CroCoNet):
         x = self.enc_norm_ray_map(x)
         return [x], pos, None
 
-    def _encode_state(self, image_tokens, image_pos):
+    def _encode_state(self, image_tokens, image_pos):    # image_tokens.shape : [1, N, 1024] image_pos.shape : [1, N, 2]
+
         batch_size = image_tokens.shape[0]
         state_feat = self.register_tokens(
             torch.arange(self.state_size, device=image_pos.device)
-        )
+        )                 # [state_size, 1024]の初期state tokenを作成。embedなので、訓練によって獲得されたvectorが入る。 
         if self.state_pe == "1d":
             state_pos = (
                 torch.tensor(
@@ -562,11 +563,11 @@ class ARCroco3DStereo(CroCoNet):
                 )[None]
                 .expand(batch_size, -1, -1)
                 .contiguous()
-            )
+            )           # state tokenを2dと見なしてpositionを生成。まずforの中でstate tokenの位置を2d平面の座標に変換。それをexpandでbach_size分広げる。shape : [B, state_size, 2]
         elif self.state_pe == "none":
             state_pos = None
         state_feat = state_feat[None].expand(batch_size, -1, -1)
-        return state_feat, state_pos, None
+        return state_feat, state_pos, None       # state_feat.shape: [B, state_size, 1024], state_pos.shape: [B, state_size, 2]
 
     def _encode_views(self, views, img_mask=None, ray_mask=None):
         device = views[0]["img"].device
@@ -574,7 +575,7 @@ class ARCroco3DStereo(CroCoNet):
         given = True
         if img_mask is None and ray_mask is None:
             given = False
-        if not given:
+        if not given:  # True in Inference
             img_mask = torch.stack(
                 [view["img_mask"] for view in views], dim=0
             )  # Shape: (num_views, batch_size)
@@ -656,16 +657,16 @@ class ARCroco3DStereo(CroCoNet):
             shapes.chunk(len(views), dim=0),
             [out.chunk(len(views), dim=0) for out in full_out],
             full_pos.chunk(len(views), dim=0),
-        )  # それぞれをtensorのshape: [num_views * batch_size, ...]だったものを、shape: (...) * <num_views * batch_size>個のtupleに分割する。
+        )  # それぞれをtensorのshape: [num_views * batch_size, ...]だったものを、shape: (...) * num_views個のtupleに分割する。
     
-    def _decoder(self, f_state, pos_state, f_img, pos_img, f_pose, pos_pose):
+    def _decoder(self, f_state, pos_state, f_img, pos_img, f_pose, pos_pose):  # shape : [B, 768, 768], [B, 768, 2], [B, 576, 1024], [B, 576, 2], [B, 1, 768], [B, 1, 2]
         final_output = [(f_state, f_img)]  # before projection
         assert f_state.shape[-1] == self.dec_embed_dim
-        f_img = self.decoder_embed(f_img)
-        if self.pose_head_flag:
+        f_img = self.decoder_embed(f_img)      # f_img.shape : [B, 576, 768]
+        if self.pose_head_flag:  # True
             assert f_pose is not None and pos_pose is not None
-            f_img = torch.cat([f_pose, f_img], dim=1)
-            pos_img = torch.cat([pos_pose, pos_img], dim=1)
+            f_img = torch.cat([f_pose, f_img], dim=1)   # poseを画像先頭にconcat。 f_img.shape : [B, 577, 768]
+            pos_img = torch.cat([pos_pose, pos_img], dim=1)   # poseのpositionとimgのpositionをconcat。pos_img.shape : [B, 577, 2]
         final_output.append((f_state, f_img))
         for blk_state, blk_img in zip(self.dec_blocks_state, self.dec_blocks):
             if (
@@ -688,15 +689,15 @@ class ARCroco3DStereo(CroCoNet):
                     use_reentrant=not self.fixed_input_length,
                 )
             else:
-                f_state, _ = blk_state(*final_output[-1][::+1], pos_state, pos_img)
-                f_img, _ = blk_img(*final_output[-1][::-1], pos_img, pos_state)
+                f_state, _ = blk_state(*final_output[-1][::+1], pos_state, pos_img)  # f_state.shape: [B, 768, 768]
+                f_img, _ = blk_img(*final_output[-1][::-1], pos_img, pos_state)      # f_img.shape: [B, 577, 768]
             final_output.append((f_state, f_img))
         del final_output[1]  # duplicate with final_output[0]
         final_output[-1] = (
             self.dec_norm_state(final_output[-1][0]),
             self.dec_norm(final_output[-1][1]),
         )
-        return zip(*final_output)
+        return zip(*final_output)   # 二つのtupleを返す。(f_state_0, f_state_1, ..., f_state_n), (f_img_0, f_img_1, ..., f_img_n)
 
     def _downstream_head(self, decout, img_shape, **kwargs):
         B, S, D = decout[-1].shape
@@ -707,9 +708,9 @@ class ARCroco3DStereo(CroCoNet):
         """
         Current Version: input the first frame img feature and pose to initialize the state feature and pose
         """
-        state_feat, state_pos, _ = self._encode_state(image_tokens, image_pos)
-        state_feat = self.decoder_embed_state(state_feat)
-        return state_feat, state_pos
+        state_feat, state_pos, _ = self._encode_state(image_tokens, image_pos)  # state_feat.shape: [B, state_size, 1024], state_pos.shape: [B, state_size, 2]
+        state_feat = self.decoder_embed_state(state_feat)                   # state_feat.shape: [B, state_size, 768]
+        return state_feat, state_pos                               # state_feat.shape: [B, state_size, 768], state_pos.shape: [B, state_size, 2]
 
     def _recurrent_rollout(
         self,
@@ -728,7 +729,7 @@ class ARCroco3DStereo(CroCoNet):
             state_feat, state_pos, current_feat, current_pos, pose_feat, pose_pos
         )
         new_state_feat = new_state_feat[-1]
-        return new_state_feat, dec
+        return new_state_feat, dec  # new_state_feat.shape: [B, state_size, 768], dec : [(B, N, 768), (B, N+1, 768), (B, N+1, 768), (B, N+1, 768)]
 
     def _get_img_level_feat(self, feat):
         return torch.mean(feat, dim=1, keepdim=True)
@@ -815,25 +816,25 @@ class ARCroco3DStereo(CroCoNet):
         return res, (state_feat, mem)
 
     def _forward_impl(self, views, ret_state=False):
-        shape, feat_ls, pos = self._encode_views(views)
+        shape, feat_ls, pos = self._encode_views(views)  # 全frameのencode完了。 feat[0].shape : [B, N, 1024] , pos[0].shape : [B, N, 2]
         feat = feat_ls[-1]
-        state_feat, state_pos = self._init_state(feat[0], pos[0])
-        mem = self.pose_retriever.mem.expand(feat[0].shape[0], -1, -1)
+        state_feat, state_pos = self._init_state(feat[0], pos[0])       # stateの初期化完了。初期stateは画像とは独立。形状を知るために渡す。 state_feat.shape: [B, state_size, 768], state_pos.shape: [B, state_size, 2]
+        mem = self.pose_retriever.mem.expand(feat[0].shape[0], -1, -1)  # pose用のmemoryの初期化。形状はstateと同じ。 mem.shape: [B, 256, 1536]
         init_state_feat = state_feat.clone()
         init_mem = mem.clone()
-        all_state_args = [(state_feat, state_pos, init_state_feat, mem, init_mem)]
+        all_state_args = [(state_feat, state_pos, init_state_feat, mem, init_mem)] # shape : [B, 768, 768], [B, 768, 2], [1, 768, 768], [B, 256, 1536], [B, 256, 1536]
         ress = []
         for i in range(len(views)):
-            feat_i = feat[i]
-            pos_i = pos[i]
-            if self.pose_head_flag:
-                global_img_feat_i = self._get_img_level_feat(feat_i)
+            feat_i = feat[i]    # feat_i.shape: [B, N, 1024]
+            pos_i = pos[i]      # pose_i.shape: [B, N, 2]
+            if self.pose_head_flag:  # True
+                global_img_feat_i = self._get_img_level_feat(feat_i)  # global_img_feat_i.shape: [B, 1, 1024]
                 if i == 0:
-                    pose_feat_i = self.pose_token.expand(feat_i.shape[0], -1, -1)
+                    pose_feat_i = self.pose_token.expand(feat_i.shape[0], -1, -1)  # 初期ループでは、pose_tokenを取得。 shape: [B, 1, 768]
                 else:
-                    pose_feat_i = self.pose_retriever.inquire(global_img_feat_i, mem)
+                    pose_feat_i = self.pose_retriever.inquire(global_img_feat_i, mem)  # それ以降のloopでは、pose_retrieverからposeを取得する。 shape: [B, 1, 768]
                 pose_pos_i = -torch.ones(
-                    feat_i.shape[0], 1, 2, device=feat_i.device, dtype=pos_i.dtype
+                    feat_i.shape[0], 1, 2, device=feat_i.device, dtype=pos_i.dtype  # poseの位置は全て-1で初期化。shape: [B, 1, 2]。これは、poseの位置は画像の位置とは無関係であることを示す。
                 )
             else:
                 pose_feat_i = None
@@ -849,51 +850,58 @@ class ARCroco3DStereo(CroCoNet):
                 img_mask=views[i]["img_mask"],
                 reset_mask=views[i]["reset"],
                 update=views[i].get("update", None),
-            )
-            out_pose_feat_i = dec[-1][:, 0:1]
+            )                # new_state_feat.shape: [B, state_size, 768], dec : [(B, N, 768), (B, N+1, 768), (B, N+1, 768), (B, N+1, 768)]
+            out_pose_feat_i = dec[-1][:, 0:1]  # 先頭のposeだけ取り出す。decの最後の要素、つまり最終出力からposeの特徴量を取得。 shape: [B, 1, 768]
             new_mem = self.pose_retriever.update_mem(
                 mem, global_img_feat_i, out_pose_feat_i
-            )
+            )     # new_mem.shape: [1, 256, 1536], global_img_feat_i.shape: [1, 1, 1024], out_pose_feat_i.shape: [1, 1, 768]
             assert len(dec) == self.dec_depth + 1
             head_input = [
-                dec[0].float(),
-                dec[self.dec_depth * 2 // 4][:, 1:].float(),
-                dec[self.dec_depth * 3 // 4][:, 1:].float(),
-                dec[self.dec_depth].float(),
+                dec[0].float(),                                 # dec[0].shape: [B, N, 1024]
+                dec[self.dec_depth * 2 // 4][:, 1:].float(),    # shape: [B, N, 768]
+                dec[self.dec_depth * 3 // 4][:, 1:].float(),    # shape: [B, N, 768]
+                dec[self.dec_depth].float(),                    # 最終出力。shape: [B, N+1, 768]
             ]
             res = self._downstream_head(head_input, shape[i], pos=pos_i)
+            # resはdictで各headの出力を持つ。inferenceのdefaultでは、'pts3d_in_self_view', 'conf_self', 'rgb', 'camera_pose', 'pts3d_in_other_view', 'conf'
+            # res["pts3d_in_self_view"].shape : [B, 288, 512, 3]
+            # res["conf_self"].shape : [B, 288, 512]
+            # res["rgb"].shape : [B, 288, 512, 3]
+            # res["camera_pose"].shape : [B, 7]
+            # res["pts3d_in_other_view"].shape : [B, 288, 512, 3]
+            # res["conf"].shape : [B, 288, 512]
             ress.append(res)
             img_mask = views[i]["img_mask"]
             update = views[i].get("update", None)
-            if update is not None:
+            if update is not None:  # inferece時はTrue
                 update_mask = (
                     img_mask & update
-                )  # if don't update, then whatever img_mask
+                )  # if don't update, then whatever img_mask。inference時はTrue
             else:
                 update_mask = img_mask
-            update_mask = update_mask[:, None, None].float()
+            update_mask = update_mask[:, None, None].float() # update_mask.shape: [B, 1, 1]
             state_feat = new_state_feat * update_mask + state_feat * (
                 1 - update_mask
-            )  # update global state
+            )  # update global state。inferenceではstate_feat = new_state_featになる。
             mem = new_mem * update_mask + mem * (
                 1 - update_mask
             )  # then update local state
-            reset_mask = views[i]["reset"]
-            if reset_mask is not None:
+            reset_mask = views[i]["reset"]  # inference時はFalse
+            if reset_mask is not None:  # True
                 reset_mask = reset_mask[:, None, None].float()
                 state_feat = init_state_feat * reset_mask + state_feat * (
                     1 - reset_mask
-                )
-                mem = init_mem * reset_mask + mem * (1 - reset_mask)
+                )   # reset_maskは全部Falseなので、state_featはresetされない。
+                mem = init_mem * reset_mask + mem * (1 - reset_mask)  # reset_maskは全部Falseなので、memはresetされない。
             all_state_args.append(
                 (state_feat, state_pos, init_state_feat, mem, init_mem)
             )
-        if ret_state:
+        if ret_state:  # True
             return ress, views, all_state_args
         return ress, views
 
     def forward(self, views, ret_state=False):
-        if ret_state:
+        if ret_state:  # True
             ress, views, state_args = self._forward_impl(views, ret_state=ret_state)
             return ARCroco3DStereoOutput(ress=ress, views=views), state_args
         else:
@@ -1102,6 +1110,7 @@ class ARCroco3DStereo(CroCoNet):
 
 
 if __name__ == "__main__":
+    """
     print(ARCroco3DStereo.mro())
     cfg = ARCroco3DStereoConfig(
         state_size=256,
@@ -1122,6 +1131,33 @@ if __name__ == "__main__":
         dec_num_heads=12,
     )
     ARCroco3DStereo(cfg)
+    """
+
+    from torchvista import trace_model
+    import numpy as np
     
-
-
+    model = ARCroco3DStereo.from_pretrained("src/cut3r_512_dpt_4_64.pth")
+    model.eval()
+    input = [{
+        "img": torch.randn(1, 3, 288, 512),
+        "ray_map": torch.full((1, 6, 288, 512), torch.nan),                       # shape : (1, 6, H, W)
+        "true_shape": torch.tensor([[288, 512]]),
+        "idx": 0,
+        "instance": str(0),
+        "camera_pose": torch.from_numpy(np.eye(4, dtype=np.float32)).unsqueeze(0),  # shape : (1, 4, 4)
+        "img_mask": torch.tensor(True).unsqueeze(0),  # tensor([True])
+        "ray_mask": torch.tensor(False).unsqueeze(0),  # tensor([False])
+        "update": torch.tensor(True).unsqueeze(0),  # tensor([True])
+        "reset": torch.tensor(False).unsqueeze(0),  # tensor([False])
+    }]
+    trace_model(model, (input, True), collapse_modules_after_depth=0, show_non_gradient_nodes=True)
+    
+    """
+    from torchview import draw_graph
+    import graphviz
+    graphviz.set_jupyter_format('png')
+    import torchvision.models as models
+    resnet18 = models.resnet18()
+    model_graph = draw_graph(model, input_data=input)
+    model_graph.visual_graph
+    """

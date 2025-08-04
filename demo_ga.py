@@ -269,7 +269,7 @@ def parse_seq_path(p):
         if video_fps == 0:
             cap.release()
             raise ValueError(f"Error: Video FPS is 0 for {p}")
-        frame_interval = 1
+        frame_interval = 30
         frame_indices = list(range(0, total_frames, frame_interval))
         print(
             f" - Video FPS: {video_fps}, Frame Interval: {frame_interval}, Total Frames to Read: {len(frame_indices)}"

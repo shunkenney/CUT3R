@@ -14,6 +14,8 @@ Usage:
 Example:
     python demo.py --model_path src/cut3r_512_dpt_4_64.pth \
         --seq_path examples/001 --device cuda --size 512
+        
+    CUDA_VISIBLE_DEVICES=1 python demo.py --model_path src/cut3r_512_dpt_4_64.pth --size 512 --seq_path data/20250529/valid/lane/running/3_dynB.MP4 --vis_threshold 1.5 --output_dir tmp
 """
 
 import os
@@ -117,7 +119,7 @@ def prepare_input(
                     ),
                     torch.nan,
                 ),                       # shape : (1, 6, H, W)
-                "true_shape": torch.from_numpy(images[i]["true_shape"]),  # tensor([[H, W]])、shape : (2,)
+                "true_shape": torch.from_numpy(images[i]["true_shape"]),  # なぜかtrueなshapeではなく、処理後のshape。tensor([[H, W]])、shape : (2,)
                 "idx": i,
                 "instance": str(i),
                 "camera_pose": torch.from_numpy(np.eye(4, dtype=np.float32)).unsqueeze(
